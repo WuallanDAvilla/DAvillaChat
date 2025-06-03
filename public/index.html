@@ -1,73 +1,167 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>D'Avilla Chat</title>
+    <link rel="icon" href="assets/IconeDoMeuSite.png" type="image/png" />
+    <link rel="stylesheet" href="styles/style.css" />
+  </head>
 
-<head>
-  <meta charset="UTF-8" />
-  <title>D'Avilla Chat</title>
-  <link rel="icon" href="assets/IconeDoMeuSite.png" type="image/png" />
-  <link rel="stylesheet" href="styles/style.css">
-</head>
-
-<body id="pageBody">
-  <div class="container">
-    <h1>💬 D'Avilla Chat</h1>
-    <button id="darkModeToggle">🌙 Modo Escuro</button>
-
-    <div class="input-wrapper" id="nameInputWrapper">
-      <input id="username" placeholder="Digite seu nome" maxlength="25" />
-      <button id="joinButton">Entrar</button>
-    </div>
-
-    <div class="chat-wrapper">
-      <div id="chat" class="hidden"></div>
-      <div id="users" class="hidden">
-        <h3>Online</h3>
-        <ul id="userList"></ul>
+  <body id="pageBody">
+    <div class="container">
+      <div class="header-controls">
+        <h1>💬 D'Avilla Chat</h1>
+        <button id="darkModeToggle">🌙 Modo Escuro</button>
+        <button id="logoutButton" class="hidden danger-button">🚪 Sair</button>
       </div>
+
+      <div id="errorDisplay" class="error-display" aria-live="assertive"></div>
+
+      <div id="joinScreen">
+        <div class="input-group">
+          <label for="username">Nome de Usuário:</label>
+          <input
+            id="username"
+            placeholder="Digite seu nome"
+            maxlength="25"
+            aria-label="Seu nome"
+          />
+        </div>
+        <div class="input-group">
+          <label for="avatarStyleSelect">Estilo do Avatar:</label>
+          <select id="avatarStyleSelect">
+            <option value="thumbs" selected>Legal 👍</option>
+            <option value="adventurer">Aventureiro 🏹</option>
+            <option value="pixel-art">Pixel Art 👾</option>
+            <option value="bottts">Robôs 🤖</option>
+            <option value="micah">Pessoas 😊</option>
+            <option value="miniavs">Minimalista 👤</option>
+            <option value="open-peeps">Descolados 😎</option>
+            <option value="notionists">Notion ✍️</option>
+            <option value="rings">Anéis Abstratos 💍</option>
+            <option value="shapes">Formas Geométricas 💠</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label for="avatarSeed">Personalizar Avatar (opcional):</label>
+          <input
+            id="avatarSeed"
+            placeholder="Ex: seuApelido"
+            maxlength="50"
+            aria-label="Personalizar semente do avatar"
+          />
+        </div>
+        <div id="avatarPreviewContainer">
+          <p>Prévia do Avatar:</p>
+          <img
+            id="avatarPreview"
+            src=""
+            alt="Prévia do avatar"
+            width="48"
+            height="48"
+          />
+        </div>
+        <button id="joinButton">Entrar no Chat</button>
+      </div>
+
+      <div class="chat-ui hidden">
+        <!-- Inicialmente escondido -->
+        <div class="chat-wrapper">
+          <div id="chatContainer">
+            <div id="chat" aria-live="polite"></div>
+            <button id="newMessagesIndicator" class="hidden">
+              ⬇️ Novas Mensagens
+            </button>
+          </div>
+          <div id="users">
+            <h3>Online</h3>
+            <ul id="userList"></ul>
+          </div>
+        </div>
+        <div id="typingIndicator" class="typing-indicator"></div>
+
+        <div class="input-wrapper" id="messageInputWrapper">
+          <input
+            id="msg"
+            type="text"
+            placeholder="Digite sua mensagem, /pm <user> <msg> ou /clear"
+            disabled
+            maxlength="500"
+            aria-label="Sua mensagem"
+          />
+          <button id="send" disabled>Enviar</button>
+        </div>
+        <div
+          id="messageErrorDisplay"
+          class="error-display"
+          aria-live="assertive"
+        ></div>
+      </div>
+      <!-- Fim de .chat-ui -->
     </div>
-    <div id="typingIndicator" class="typing-indicator"></div>
 
-    <div class="input-wrapper" id="messageInputWrapper">
-      <input id="msg" type="text" placeholder="Digite sua mensagem..." disabled maxlength="500" />
-      <button id="send" disabled>Enviar</button>
+    <button id="toggleUpdates" title="Ver Atualizações">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path
+          d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
+        ></path>
+        <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+      </svg>
+    </button>
+
+    <div id="updatesPanel">
+      <h2>🛠️ Atualizações do Chat</h2>
+      <ul>
+        <li>✅ Interface redesenhada e centralizada</li>
+        <li>🌙 Suporte a modo escuro</li>
+        <li>👥 Painel de usuários online com cores</li>
+        <li>🎨 Avatares dinâmicos para usuários (com escolha de estilo!)</li>
+        <li>🚪 Botão de Sair adicionado!</li>
+        <li>🛡️ Melhorias de segurança (XSS)</li>
+        <li>⚙️ Validações de entrada (nome, mensagem)</li>
+        <li>🕒 Timestamps nas mensagens</li>
+        <li>🔗 Caminhos de arquivos corrigidos</li>
+        <li>💅 Estilos centralizados em CSS (mais simples!)</li>
+        <li>💬 Indicador de "Digitando..." (global e na lista de usuários)</li>
+        <li>📜 Scroll Inteligente no Chat e botão "Novas Mensagens"</li>
+        <li>✨ Animações Sutis (reduzidas)</li>
+        <li>🖌️ Barra de Rolagem Estilizada</li>
+        <li>📱 Melhorias na Responsividade</li>
+        <li>🤫 Mensagens Privadas (Sussurros) - com comando `/pm` ou `/w`</li>
+        <li>🔗 URLs nas mensagens agora são clicáveis</li>
+        <li>📝 Suporte básico a Markdown: *itálico*, *negrito*, ~tachado~</li>
+        <li>🧹 Comando `/clear` para limpar chat local (com confirmação)</li>
+        <li>🔔 Notificações no título da aba</li>
+        <li>🚦 Rate limiting básico no servidor</li>
+        <li>⚠️ Alertas substituídos por mensagens inline</li>
+        <li>⏳ Feedback de "Conectando..." ao entrar</li>
+        <li>📜 Esta aba de atualizações foi adicionada!</li>
+        <li>📜 Histórico das últimas mensagens ao entrar no chat!</li>
+        <li>
+          📜 Nota: Eu tive bastante dificuldade para fazer isso, mas com toda
+          certeza valeu a pena...
+        </li>
+        <li>
+          👥 Meu GitHub =
+          <a href="https://github.com/WuallanDAvilla" target="_blank"
+            >WuallanDAvilla</a
+          >
+        </li>
+        <li>✅ Projeto pessoal finalizado!</li>
+        <li>© Direitos Autorais reservados a Wuallan D'Avilla</li>
+      </ul>
     </div>
-  </div>
 
-  <button id="toggleUpdates" title="Ver Atualizações">
-    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
-      <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
-    </svg>
-  </button>
-
-  <div id="updatesPanel">
-    <h2>🛠️ Atualizações do Chat</h2>
-    <ul>
-      <li>✅ Interface redesenhada e centralizada</li>
-      <li>🌙 Suporte a modo escuro</li>
-      <li>👥 Painel de usuários online com cores</li>
-      <li>🎨 Avatares dinâmicos para usuários</li>
-      <li>🛡️ Melhorias de segurança (XSS)</li>
-      <li>⚙️ Validações de entrada (nome, mensagem)</li>
-      <li>🕒 Timestamps nas mensagens</li>
-      <li>🔗 Caminhos de arquivos corrigidos</li>
-      <li>💅 Estilos centralizados em CSS</li>
-      <li>💬 Indicador de "Digitando..."</li>
-      <li>📜 Scroll Inteligente no Chat</li>
-      <li>✨ Animações Sutis</li>
-      <li>🖌️ Barra de Rolagem Estilizada</li>
-      <li>📱 Melhorias na Responsividade</li>
-      <li>🤫 Mensagens Privadas (Sussurros)</li> {/* ADICIONADO */}
-      <li>📜 Esta aba de atualizações foi adicionada!</li>
-      <li>📜 Nota: Eu tive bastante dificuldade para fazer isso, mas com toda certeza valeu a pena...</li>
-      <li>👥 Meu GitHub = <a href="https://github.com/WuallanDAvilla" target="_blank">WuallanDAvilla</a></li>
-      <li>✅ Projeto pessoal finalizado!</li>
-      <li>© Direitos Autorais reservados a Wuallan D'Avilla</li>
-    </ul>
-  </div>
-
-  <script src="script.js"></script>
-</body>
-
+    <script src="script.js"></script>
+  </body>
 </html>
