@@ -1,19 +1,24 @@
 const MSG_TYPES = {
   JOIN: "join",
-  USER_MESSAGE: "user_message",
+  USER_MESSAGE: "user_message", // Servidor envia este tipo com dados completos
   SYSTEM_MESSAGE: "system_message",
-  PRIVATE_MESSAGE: "private_message",
-  PRIVATE_MESSAGE_RECEIVED: "private_message_received",
-  PRIVATE_MESSAGE_SENT: "private_message_sent",
+  PRIVATE_MESSAGE: "private_message", // Cliente envia tipo para mandar PM
+  PRIVATE_MESSAGE_RECEIVED: "private_message_received", // Servidor envia para o destinatário
+  PRIVATE_MESSAGE_SENT: "private_message_sent", // Servidor envia para o remetente (confirmação)
   USER_TYPING: "user_typing",
   TYPING_START: "typing_start",
   TYPING_STOP: "typing_stop",
   USER_LIST: "userlist",
   ERROR: "error",
-  MESSAGE: "message",
+  MESSAGE: "message", // Cliente envia este tipo para mensagem pública (pode ter replyTo)
   CLEAR_CHAT_COMMAND: "clear_chat_command",
   CLEAR_CHAT_SELF: "clear_chat_self",
   HISTORY_MESSAGES: "history_messages",
+
+  EDIT_MESSAGE: "edit_message", // Cliente -> Servidor (messageId, newContent)
+  MESSAGE_EDITED: "message_edited", // Servidor -> Clientes (message object atualizado)
+  DELETE_MESSAGE: "delete_message", // Cliente -> Servidor (messageId)
+  MESSAGE_DELETED: "message_deleted", // Servidor -> Clientes (message object atualizado)
 };
 
 let ws;
@@ -26,6 +31,11 @@ const originalTitle = document.title;
 let unreadMessages = 0;
 let isTabActive = true;
 let currentOnlineUsers = [];
+
+// Cache para elementos de mensagem para fácil atualização (id -> elemento DOM)
+const messageElementsCache = new Map();
+let currentReplyingTo = null; // { messageId, sender, contentPreview }
+const EDIT_WINDOW_CLIENT = 5 * 60 * 1000; // 5 minutos (para UI, servidor tem a autoridade final)
 
 const pageBody = document.getElementById("pageBody");
 const darkModeToggleButton = document.getElementById("darkModeToggle");
@@ -52,6 +62,17 @@ const typingIndicatorDiv = document.getElementById("typingIndicator");
 const errorDisplayDiv = document.getElementById("errorDisplay");
 const messageErrorDisplayDiv = document.getElementById("messageErrorDisplay");
 const newMessagesIndicator = document.getElementById("newMessagesIndicator");
+
+const emojiToggleButton = document.getElementById("emojiToggleButton");
+const emojiPickerContainer = document.getElementById("emojiPickerContainer");
+const emojiPicker = emojiPickerContainer.querySelector("emoji-picker");
+
+const replyingToContainer = document.getElementById("replyingToContainer");
+const replyingToPreview = document.getElementById("replyingToPreview");
+const cancelReplyButton = document.getElementById("cancelReplyButton");
+const messageActionsTemplate = document.getElementById(
+  "messageActionsTemplate"
+);
 
 let typingTimeout;
 const TYPING_TIMER_LENGTH = 2000;
@@ -101,9 +122,11 @@ function sanitizeHTML(str) {
 
 function parseMarkdown(text) {
   let html = text;
-  html = html.replace(/\*(.+?)\*/g, "<strong>$1</strong>");
-  html = html.replace(/_(.+?)_/g, "<em>$1</em>");
-  html = html.replace(/~(.+?)~/g, "<del>$1</del>");
+  // Negrito precisa vir antes de itálico para evitar conflitos com aninhamento incorreto
+  html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>"); // **negrito**
+  html = html.replace(/\*(.*?)\*/g, "<em>$1</em>"); // *itálico*
+  // html = html.replace(/_(.+?)_/g, "<em>$1</em>"); // _itálico_ (alternativa, mas pode conflitar com nomes com _)
+  html = html.replace(/~(.+?)~/g, "<del>$1</del>"); // ~tachado~
   return html;
 }
 
@@ -119,6 +142,7 @@ function autolink(text) {
     ) {
       fullUrl = "http://" + url;
     }
+    // Evitar criar links dentro de atributos de tags HTML já existentes (ex: dentro de um <a> já)
     if (url.includes("<") || url.includes(">")) return url;
     return `<a href="${sanitizeHTML(
       fullUrl
@@ -126,10 +150,15 @@ function autolink(text) {
   });
 }
 
-function formatMessageContent(content) {
-  let processedContent = sanitizeHTML(content);
-  processedContent = parseMarkdown(processedContent);
-  processedContent = autolink(processedContent);
+function formatMessageContent(content, isDeleted = false) {
+  if (isDeleted) {
+    // O conteúdo de mensagens deletadas já vem formatado do servidor como "[Mensagem excluída...]"
+    // Apenas sanitizamos para segurança.
+    return `<span class="deleted-text">${sanitizeHTML(content)}</span>`;
+  }
+  let processedContent = sanitizeHTML(content); // Sanitize PRIMEIRO
+  processedContent = parseMarkdown(processedContent); // DEPOIS Markdown
+  processedContent = autolink(processedContent); // POR ÚLTIMO Autolink
   return processedContent;
 }
 
@@ -142,6 +171,7 @@ function displayInlineError(
   targetDiv.style.display = "block";
   setTimeout(() => {
     if (targetDiv.textContent === message) {
+      // Verifica se a mensagem ainda é a mesma antes de limpar
       targetDiv.textContent = "";
       targetDiv.style.display = "none";
     }
@@ -164,128 +194,242 @@ function resetToJoinScreen() {
   joinButton.disabled = false;
   joinButton.textContent = originalJoinButtonText;
 
-  // Limpar campos da tela de join pode ser opcional, mas bom para novo login
-  // usernameInput.value = "";
-  // avatarSeedInput.value = "";
-  // avatarStyleSelect.value = "thumbs"; // Reset para o padrão
-  // updateAvatarPreview();
-
   usernameInput.focus();
 
-  // Limpar estado do chat
   username = "";
   currentOnlineUsers = [];
   currentlyTypingUsers.clear();
-  chatDiv.innerHTML = ""; // Limpa mensagens do chat
-  userListUl.innerHTML = ""; // Limpa lista de usuários
+  chatDiv.innerHTML = "";
+  userListUl.innerHTML = "";
   updateTypingIndicatorUI();
   typingIndicatorDiv.style.visibility = "hidden";
   newMessagesIndicator.classList.add("hidden");
   document.title = originalTitle;
   unreadMessages = 0;
-  errorDisplayDiv.style.display = "none"; // Limpar erros antigos da tela de join
-  messageErrorDisplayDiv.style.display = "none"; // Limpar erros de mensagem
+  errorDisplayDiv.style.display = "none";
+  messageErrorDisplayDiv.style.display = "none";
+  if (emojiPickerContainer) {
+    emojiPickerContainer.classList.add("hidden");
+  }
+  if (replyingToContainer) {
+    replyingToContainer.classList.add("hidden");
+  }
+  currentReplyingTo = null;
+  messageElementsCache.clear();
 }
 
 // --- Message Rendering Logic ---
-const messageRenderers = {
-  [MSG_TYPES.USER_MESSAGE]: (data, messageElement) => {
-    const avatarUrl = getAvatarURL(
-      data.sender,
-      data.avatarStyle,
-      data.avatarSeed
-    );
-    const avatarImg = document.createElement("img");
-    avatarImg.className = "avatar";
-    avatarImg.src = avatarUrl;
-    avatarImg.alt = data.sender;
 
-    const senderStrong = document.createElement("strong");
-    senderStrong.style.color = getColorForUser(data.sender);
-    senderStrong.textContent = data.sender + ": ";
+function createMessageMainContent(data, isEditing = false) {
+  const mainContentDiv = document.createElement("div");
+  mainContentDiv.className = "message-main-content";
 
-    messageElement.appendChild(avatarImg);
-    messageElement.appendChild(senderStrong);
-    messageElement.innerHTML += formatMessageContent(data.content);
-  },
-  [MSG_TYPES.SYSTEM_MESSAGE]: (data, messageElement) => {
-    messageElement.innerHTML = formatMessageContent(data.text);
-    messageElement.classList.add("system-message");
-  },
-  [MSG_TYPES.PRIVATE_MESSAGE_RECEIVED]: (data, messageElement) => {
-    messageElement.classList.add("private-message");
-    const avatarUrl = getAvatarURL(
-      data.sender,
-      data.avatarStyle,
-      data.avatarSeed
-    );
-    const avatarImg = document.createElement("img");
-    avatarImg.className = "avatar";
-    avatarImg.src = avatarUrl;
-    avatarImg.alt = data.sender;
+  const avatarUrl = getAvatarURL(
+    data.sender,
+    data.avatarStyle,
+    data.avatarSeed
+  );
+  const avatarImg = document.createElement("img");
+  avatarImg.className = "avatar";
+  avatarImg.src = avatarUrl;
+  avatarImg.alt = data.sender;
+  mainContentDiv.appendChild(avatarImg);
 
-    const pmIndicator = document.createElement("span");
-    pmIndicator.className = "pm-indicator";
-    pmIndicator.textContent = `🔒 (Privado de ${data.sender}): `;
-    pmIndicator.style.color = getColorForUser(data.sender);
+  const textContentDiv = document.createElement("div");
+  textContentDiv.className = "message-text-content";
 
-    messageElement.appendChild(avatarImg);
-    messageElement.appendChild(pmIndicator);
-    messageElement.innerHTML += formatMessageContent(data.content);
-  },
-  [MSG_TYPES.PRIVATE_MESSAGE_SENT]: (data, messageElement) => {
-    messageElement.classList.add("private-message");
-    const recipientAvatarUrl = getAvatarURL(
-      data.recipient,
-      data.recipientAvatarStyle,
-      data.recipientAvatarSeed
-    );
-    const avatarImg = document.createElement("img");
-    avatarImg.className = "avatar";
-    avatarImg.src = recipientAvatarUrl;
-    avatarImg.alt = data.recipient;
-    avatarImg.style.opacity = "0.7";
+  const senderStrong = document.createElement("strong");
+  senderStrong.style.color = getColorForUser(data.sender);
+  senderStrong.textContent = data.sender + ": ";
+  textContentDiv.appendChild(senderStrong);
 
-    const pmIndicator = document.createElement("span");
-    pmIndicator.className = "pm-indicator";
-    pmIndicator.textContent = `🔒 (Privado para ${data.recipient}): `;
-    pmIndicator.style.color = getColorForUser(data.recipient);
+  const contentSpan = document.createElement("span");
+  contentSpan.className = "content";
+  // Para edição, o conteúdo inicial do contenteditable deve ser o texto puro
+  // A formatação será aplicada após salvar.
+  contentSpan.innerHTML = isEditing
+    ? sanitizeHTML(data.content)
+    : formatMessageContent(data.content, data.isDeleted);
+  textContentDiv.appendChild(contentSpan);
 
-    messageElement.appendChild(avatarImg);
-    messageElement.appendChild(pmIndicator);
-    messageElement.innerHTML += formatMessageContent(data.content);
-  },
-};
+  if (isEditing) {
+    contentSpan.setAttribute("contenteditable", "true");
+    contentSpan.setAttribute("role", "textbox");
+    contentSpan.setAttribute("aria-multiline", "true");
+    // Guardar o conteúdo original não formatado para edição
+    contentSpan.dataset.originalUnformattedContent = data.content;
+  }
+  mainContentDiv.appendChild(textContentDiv);
+  return mainContentDiv;
+}
 
-function displayMessage(data, isHistorical = false) {
-  const isNearBottom =
-    chatDiv.scrollHeight - chatDiv.clientHeight <= chatDiv.scrollTop + 100;
+function createReplyQuoteElement(replyToData) {
+  if (!replyToData || !replyToData.messageId) return null;
 
+  const quoteDiv = document.createElement("div");
+  quoteDiv.className = "replied-message-quote";
+
+  const originalSenderStrong = document.createElement("strong");
+  originalSenderStrong.textContent = sanitizeHTML(replyToData.sender) + ": ";
+  quoteDiv.appendChild(originalSenderStrong);
+
+  const previewParagraph = document.createElement("p");
+  previewParagraph.textContent =
+    sanitizeHTML(replyToData.contentPreview.substring(0, 100)) +
+    (replyToData.contentPreview.length > 100 ? "..." : "");
+  quoteDiv.appendChild(previewParagraph);
+
+  quoteDiv.style.cursor = "pointer";
+  quoteDiv.title = "Ir para mensagem original";
+  quoteDiv.addEventListener("click", () => {
+    const originalMsgEl = messageElementsCache.get(replyToData.messageId);
+    if (originalMsgEl) {
+      originalMsgEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      originalMsgEl.classList.add("highlighted-reply");
+      setTimeout(
+        () => originalMsgEl.classList.remove("highlighted-reply"),
+        2000
+      );
+    } else {
+      displayInlineError(
+        "Mensagem original não encontrada no chat atual.",
+        messageErrorDisplayDiv,
+        3000
+      );
+    }
+  });
+  return quoteDiv;
+}
+
+function createMessageElement(data) {
   const messageElement = document.createElement("div");
+  messageElement.className = "message-item";
+  messageElement.dataset.messageId = data.id;
+  // Guardar o conteúdo original não formatado para facilitar a edição.
+  // Isso é útil se a mensagem for editada múltiplas vezes, para não acumular formatação.
+  if (data.type === MSG_TYPES.USER_MESSAGE) {
+    messageElement.dataset.originalUnformattedContent = data.content;
+  }
+
+  if (data.replyTo) {
+    const quoteElement = createReplyQuoteElement(data.replyTo);
+    if (quoteElement) {
+      messageElement.appendChild(quoteElement);
+    }
+  }
+
+  if (data.type === MSG_TYPES.USER_MESSAGE) {
+    messageElement.appendChild(createMessageMainContent(data));
+  } else if (data.type === MSG_TYPES.SYSTEM_MESSAGE) {
+    messageElement.classList.add("system-message");
+    messageElement.innerHTML = formatMessageContent(data.text, data.isDeleted);
+  } else if (
+    data.type === MSG_TYPES.PRIVATE_MESSAGE_RECEIVED ||
+    data.type === MSG_TYPES.PRIVATE_MESSAGE_SENT
+  ) {
+    messageElement.classList.add("private-message");
+    const isReceived = data.type === MSG_TYPES.PRIVATE_MESSAGE_RECEIVED;
+    const avatarOwner = isReceived ? data.sender : username;
+    const avatarOwnerStyle = isReceived ? data.avatarStyle : userAvatarStyle;
+    const avatarOwnerSeed = isReceived ? data.avatarSeed : userAvatarSeed;
+    const altUser = isReceived ? data.sender : data.recipient;
+
+    const avatarUrl = getAvatarURL(
+      avatarOwner,
+      avatarOwnerStyle,
+      avatarOwnerSeed
+    );
+    const avatarImg = document.createElement("img");
+    avatarImg.className = "avatar";
+    avatarImg.src = avatarUrl;
+    avatarImg.alt = altUser;
+
+    const pmIndicator = document.createElement("span");
+    pmIndicator.className = "pm-indicator";
+    pmIndicator.textContent = isReceived
+      ? `🔒 (Privado de ${sanitizeHTML(data.sender)}): `
+      : `🔒 (Privado para ${sanitizeHTML(data.recipient)}): `;
+    pmIndicator.style.color = getColorForUser(altUser);
+
+    const mainContentDiv = document.createElement("div");
+    mainContentDiv.className = "message-main-content";
+    mainContentDiv.appendChild(avatarImg);
+
+    const textContentDiv = document.createElement("div");
+    textContentDiv.className = "message-text-content";
+    textContentDiv.appendChild(pmIndicator);
+    const contentSpan = document.createElement("span");
+    contentSpan.innerHTML = formatMessageContent(data.content, data.isDeleted); // PMs também podem ser "deletadas" no futuro
+    textContentDiv.appendChild(contentSpan);
+    mainContentDiv.appendChild(textContentDiv);
+    messageElement.appendChild(mainContentDiv);
+  }
+
   const timestamp = data.timestamp
     ? new Date(data.timestamp).toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
       })
     : "";
+  const targetForExtras =
+    messageElement.querySelector(".message-text-content") || messageElement;
 
-  const renderer = messageRenderers[data.type];
-  if (renderer) {
-    renderer(data, messageElement);
-    if (timestamp) {
-      const timeSpan = document.createElement("span");
-      timeSpan.className = "timestamp";
-      timeSpan.textContent = ` (${timestamp})`;
-      messageElement.appendChild(timeSpan);
-    }
-  } else {
-    console.warn(
-      "Renderizador de mensagem não encontrado para o tipo:",
-      data.type,
-      data
-    );
-    return;
+  if (data.isEdited && !data.isDeleted) {
+    // Não mostrar "editado" se já estiver deletado
+    const editedSpan = document.createElement("span");
+    editedSpan.className = "edited-indicator";
+    editedSpan.textContent = " (editado)";
+    targetForExtras.appendChild(editedSpan);
   }
+  if (timestamp) {
+    const timeSpan = document.createElement("span");
+    timeSpan.className = "timestamp";
+    timeSpan.textContent = ` (${timestamp})`;
+    targetForExtras.appendChild(timeSpan);
+  }
+  if (data.isDeleted) {
+    messageElement.classList.add("deleted-message");
+  }
+
+  if (data.type === MSG_TYPES.USER_MESSAGE && !data.isDeleted) {
+    const actionsClone = messageActionsTemplate.content.cloneNode(true);
+    const actionsDiv = actionsClone.querySelector(".message-actions");
+
+    const replyButton = actionsDiv.querySelector(".action-reply");
+    replyButton.addEventListener("click", () =>
+      startReplying(data.id, data.sender, data.content)
+    );
+
+    const editButton = actionsDiv.querySelector(".action-edit");
+    // Verifica se o usuário é o sender E se a mensagem não é muito antiga
+    const canEdit =
+      data.sender === username &&
+      Date.now() - new Date(data.timestamp).getTime() < EDIT_WINDOW_CLIENT;
+    if (canEdit) {
+      editButton.addEventListener("click", () => startEditing(data.id));
+    } else {
+      editButton.remove();
+    }
+
+    const deleteButton = actionsDiv.querySelector(".action-delete");
+    if (data.sender === username) {
+      deleteButton.addEventListener("click", () => deleteMessage(data.id));
+    } else {
+      deleteButton.remove();
+    }
+    if (actionsDiv.childElementCount > 0) {
+      messageElement.appendChild(actionsDiv);
+    }
+  }
+
+  messageElementsCache.set(data.id, messageElement);
+  return messageElement;
+}
+
+function displayMessage(data, isHistorical = false) {
+  const isNearBottom =
+    chatDiv.scrollHeight - chatDiv.clientHeight <= chatDiv.scrollTop + 100;
+  const messageElement = createMessageElement(data); // Agora usa a função centralizada
 
   if (isHistorical) {
     messageElement.classList.add("historical-message");
@@ -298,29 +442,54 @@ function displayMessage(data, isHistorical = false) {
     } else {
       if (
         (!data.sender || data.sender !== username) &&
-        data.type !== MSG_TYPES.SYSTEM_MESSAGE
+        data.type !== MSG_TYPES.SYSTEM_MESSAGE &&
+        !data.isDeleted
       ) {
         newMessagesIndicator.classList.remove("hidden");
       }
     }
-
     if (
       !isTabActive &&
       (!data.sender || data.sender !== username) &&
-      data.type !== MSG_TYPES.SYSTEM_MESSAGE
+      data.type !== MSG_TYPES.SYSTEM_MESSAGE &&
+      !data.isDeleted
     ) {
       unreadMessages++;
       document.title = `(${unreadMessages}) ${originalTitle}`;
     }
   } else if (
     isHistorical &&
-    chatDiv.childElementCount === (data.history ? data.history.length : 0) + 1
+    chatDiv.childElementCount === (data.history ? data.history.length : 0)
   ) {
+    // Verificação ajustada
+    // Somente rola para o final após todos os históricos serem adicionados
+    // Se uma mensagem de "carregando" foi adicionada, o contador precisa ser ajustado ou a mensagem removida antes desta checagem.
+    // A lógica atual remove a mensagem de "carregando" antes de chegar aqui, então deve funcionar.
     scrollToBottom();
   }
 }
 
-// --- UI Update Functions ---
+function updateDisplayedMessage(updatedMessageData) {
+  const existingElement = messageElementsCache.get(updatedMessageData.id);
+  if (existingElement) {
+    const newElement = createMessageElement(updatedMessageData);
+    existingElement.replaceWith(newElement);
+    // O cache é atualizado dentro de createMessageElement
+  } else {
+    // Caso raro onde a mensagem não está no DOM mas recebemos atualização (ex: entrou depois da msg ser enviada)
+    // Para simplificar, podemos ignorar ou adicionar ao final se não for histórico.
+    // Se a mensagem não estava no histórico e agora aparece, pode ser confuso.
+    // Melhor seria garantir que o histórico enviado já contenha o estado mais recente.
+    console.warn(
+      "Tentativa de atualizar mensagem não encontrada no DOM:",
+      updatedMessageData.id
+    );
+    // Poderia tentar adicionar, mas precisa de cuidado para não duplicar.
+    // displayMessage(updatedMessageData, true); // Adiciona como se fosse histórica
+  }
+}
+
+// --- UI Update Functions (User List, Typing Indicator) ---
 function updateUserListUI(usersData) {
   userListUl.innerHTML = "";
   usersData.forEach((userData) => {
@@ -363,7 +532,6 @@ function updateUserListUI(usersData) {
     userListUl.appendChild(li);
   });
 }
-
 function updateTypingIndicatorUI() {
   if (currentlyTypingUsers.size === 0) {
     typingIndicatorDiv.textContent = "";
@@ -385,7 +553,6 @@ function updateTypingIndicatorUI() {
     }
   }
 }
-
 function handleUserTyping(name, isTyping) {
   if (name === username && isTyping) return;
 
@@ -471,38 +638,40 @@ function connectWebSocket() {
       } else if (data.type === MSG_TYPES.HISTORY_MESSAGES) {
         if (data.history && Array.isArray(data.history)) {
           chatDiv.innerHTML = "";
+          messageElementsCache.clear(); // Limpar cache ao carregar histórico
+
           if (data.history.length > 0) {
-            displayMessage(
-              {
-                type: MSG_TYPES.SYSTEM_MESSAGE,
-                text: "Carregando histórico...",
-                timestamp: null,
-              },
-              true
-            );
+            const loadingMsgData = {
+              id: "temp-loading-hist",
+              type: MSG_TYPES.SYSTEM_MESSAGE,
+              text: "Carregando histórico...",
+              timestamp: new Date().toISOString(),
+            };
+            displayMessage(loadingMsgData, true);
+
             data.history.forEach((msgData) => displayMessage(msgData, true));
-            if (
-              chatDiv.firstChild &&
-              chatDiv.firstChild.textContent.includes("Carregando histórico...")
-            ) {
-              chatDiv.removeChild(chatDiv.firstChild);
-            }
+
+            const loadingElement =
+              messageElementsCache.get("temp-loading-hist");
+            if (loadingElement) loadingElement.remove();
+            messageElementsCache.delete("temp-loading-hist");
           } else {
             displayMessage(
               {
+                id: "temp-no-hist",
                 type: MSG_TYPES.SYSTEM_MESSAGE,
                 text: "Nenhuma mensagem anterior no chat.",
-                timestamp: null,
+                timestamp: new Date().toISOString(),
               },
               true
             );
           }
-          scrollToBottom();
+          // Scroll to bottom after a very short delay to ensure all elements are rendered
+          setTimeout(scrollToBottom, 50);
         }
       } else if (data.type === MSG_TYPES.USER_LIST) {
         currentOnlineUsers = data.users;
         const onlineUserSet = new Set(currentOnlineUsers.map((u) => u.name));
-
         for (const nameKey in userColors) {
           if (
             Object.prototype.hasOwnProperty.call(userColors, nameKey) &&
@@ -511,20 +680,17 @@ function connectWebSocket() {
             delete userColors[nameKey];
           }
         }
-
         currentlyTypingUsers.forEach((typingUser) => {
           if (!onlineUserSet.has(typingUser)) {
             currentlyTypingUsers.delete(typingUser);
           }
         });
-
         updateUserListUI(currentOnlineUsers);
         updateTypingIndicatorUI();
       } else if (data.type === MSG_TYPES.USER_TYPING) {
         handleUserTyping(data.name, data.isTyping);
       } else if (data.type === MSG_TYPES.ERROR) {
         const errorText = data.text;
-
         if (
           errorText.includes("Nome já em uso") ||
           errorText.includes("Nome inválido")
@@ -534,9 +700,8 @@ function connectWebSocket() {
             ws.readyState !== WebSocket.CLOSING &&
             ws.readyState !== WebSocket.CLOSED
           ) {
-            ws.close(1000, "Client acknowledging invalid name error."); // Fecha com código genérico, o resetToJoinScreen cuida da UI
+            ws.close(1000, "Client acknowledging invalid name error.");
           } else {
-            // Se o ws já estiver fechado, força o reset da UI
             resetToJoinScreen();
           }
           displayInlineError(errorText);
@@ -545,12 +710,15 @@ function connectWebSocket() {
           errorText.includes("Rate limit") ||
           errorText.includes("inválido") ||
           errorText.includes("offline") ||
-          errorText.includes("Entre no chat primeiro") ||
-          errorText.includes("para si mesmo")
+          errorText.includes("Não é possível editar") ||
+          errorText.includes("Você não pode") ||
+          errorText.includes("Tempo limite") ||
+          errorText.includes("não encontrada")
         ) {
           displayInlineError(errorText, messageErrorDisplayDiv);
+        } else if (errorText.includes("Entre no chat primeiro")) {
+          displayInlineError(errorText, errorDisplayDiv); // Erro de não join na tela de join
         } else {
-          // Erros que não resetam para join, mas ainda são importantes
           displayInlineError(
             errorText,
             errorDisplayDiv.style.display !== "none"
@@ -560,12 +728,18 @@ function connectWebSocket() {
         }
       } else if (data.type === MSG_TYPES.CLEAR_CHAT_SELF) {
         chatDiv.innerHTML = "";
+        messageElementsCache.clear();
         const systemClearMsg = {
+          id: "self-clear-" + Date.now(),
           type: MSG_TYPES.SYSTEM_MESSAGE,
           text: "Seu chat local foi limpo.",
           timestamp: new Date().toISOString(),
         };
         displayMessage(systemClearMsg, true);
+      } else if (data.type === MSG_TYPES.MESSAGE_EDITED) {
+        updateDisplayedMessage(data.message);
+      } else if (data.type === MSG_TYPES.MESSAGE_DELETED) {
+        updateDisplayedMessage(data.message);
       } else {
         console.warn(
           "Tipo de mensagem desconhecida recebida do servidor:",
@@ -594,14 +768,15 @@ function connectWebSocket() {
       event.reason
     );
     const reasonStr = event.reason ? event.reason.toString() : "";
-    // Não mostrar "Desconectado" se for por erro de nome ou logout explícito
     if (
-      username &&
+      username && // Só mostra desconectado se o usuário tinha um nome (estava no chat)
       !reasonStr.includes("Nome em uso") &&
       !reasonStr.includes("Nome inválido") &&
-      reasonStr !== "Client requested logout"
+      reasonStr !== "Client requested logout" &&
+      !reasonStr.includes("Client acknowledging invalid name error")
     ) {
-      displayInlineError("Desconectado do chat. Tente entrar novamente.");
+      // Não precisa exibir mensagem de desconexão aqui, resetToJoinScreen já é suficiente
+      // A tela de join é o indicativo de que não está conectado.
     }
     resetToJoinScreen();
   };
@@ -650,7 +825,7 @@ function sendPrivateMessagePrompt(recipientName) {
   const messageContent = prompt(
     `Digite sua mensagem privada para ${recipientName}:`
   );
-  if (messageContent === null) return;
+  if (messageContent === null) return; // Usuário cancelou
   sendPrivateMessageToServer(recipientName, messageContent);
 }
 
@@ -680,7 +855,7 @@ function sendMessage() {
     if (confirm("Tem certeza que deseja limpar seu histórico de chat local?")) {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: MSG_TYPES.CLEAR_CHAT_COMMAND }));
-        msgInput.value = "";
+        msgInput.value = ""; // Limpa o input após enviar comando
         msgInput.focus();
       } else {
         displayInlineError(
@@ -689,7 +864,7 @@ function sendMessage() {
         );
       }
     } else {
-      msgInput.focus();
+      msgInput.focus(); // Mantém o foco se cancelar
     }
     return;
   }
@@ -699,12 +874,14 @@ function sendMessage() {
     const recipient = pmMatch[2];
     const privateContent = pmMatch[3];
     if (sendPrivateMessageToServer(recipient, privateContent)) {
-      msgInput.value = "";
+      msgInput.value = ""; // Limpa o input após enviar PM
       msgInput.focus();
       if (typingTimeout) {
         clearTimeout(typingTimeout);
         typingTimeout = null;
-        ws.send(JSON.stringify({ type: MSG_TYPES.TYPING_STOP }));
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: MSG_TYPES.TYPING_STOP }));
+        }
       }
     }
     return;
@@ -719,12 +896,20 @@ function sendMessage() {
   }
 
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(
-      JSON.stringify({ type: MSG_TYPES.MESSAGE, text: trimmedMessageText })
-    );
+    const messagePayload = {
+      type: MSG_TYPES.MESSAGE,
+      text: trimmedMessageText,
+    };
+    if (currentReplyingTo) {
+      messagePayload.replyTo = currentReplyingTo;
+    }
+
+    ws.send(JSON.stringify(messagePayload));
+
     msgInput.value = "";
     msgInput.focus();
-    messageErrorDisplayDiv.style.display = "none";
+    messageErrorDisplayDiv.style.display = "none"; // Limpa erros anteriores de mensagem
+    cancelReplying();
 
     if (typingTimeout) {
       clearTimeout(typingTimeout);
@@ -741,10 +926,9 @@ function sendMessage() {
 
 function handleLogout() {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.close(1000, "Client requested logout"); // Código 1000 é fechamento normal
+    ws.close(1000, "Client requested logout");
   } else {
-    // Se não houver conexão WS, apenas reseta a UI
-    resetToJoinScreen();
+    resetToJoinScreen(); // Se não houver conexão, apenas reseta a UI
   }
 }
 
@@ -755,6 +939,167 @@ function toggleDarkMode() {
     ? "☀️ Modo Claro"
     : "🌙 Modo Escuro";
   localStorage.setItem("theme", isDarkMode ? "dark" : "light");
+}
+
+// --- Novas Funções para Edição, Exclusão, Resposta ---
+function startReplying(messageId, sender, content) {
+  currentReplyingTo = {
+    messageId,
+    sender,
+    contentPreview: content.substring(0, 100),
+  };
+  replyingToPreview.innerHTML = `<strong>${sanitizeHTML(
+    sender
+  )}:</strong> ${sanitizeHTML(currentReplyingTo.contentPreview)}`;
+  replyingToContainer.classList.remove("hidden");
+  msgInput.focus();
+}
+
+function cancelReplying() {
+  currentReplyingTo = null;
+  if (replyingToContainer) replyingToContainer.classList.add("hidden");
+  if (replyingToPreview) replyingToPreview.innerHTML = "";
+}
+
+function startEditing(messageId) {
+  const messageElement = messageElementsCache.get(messageId);
+  if (!messageElement || messageElement.classList.contains("editing")) return; // Já editando esta ou não encontrada
+
+  messageElement.classList.add("editing"); // Marcar como em edição para evitar múltiplas edições
+
+  const textContentSpan = messageElement.querySelector(
+    ".message-text-content .content"
+  );
+  if (!textContentSpan) {
+    messageElement.classList.remove("editing");
+    return;
+  }
+
+  // Usar o conteúdo original não formatado guardado no dataset
+  const originalUnformattedContent =
+    messageElement.dataset.originalUnformattedContent ||
+    textContentSpan.textContent;
+
+  textContentSpan.setAttribute("contenteditable", "true");
+  textContentSpan.textContent = originalUnformattedContent; // Preencher com texto puro
+  textContentSpan.focus();
+
+  const actionsDiv = messageElement.querySelector(".message-actions");
+  if (actionsDiv) actionsDiv.style.display = "none";
+
+  const editActionsDiv = document.createElement("div");
+  editActionsDiv.className = "edit-actions";
+  const saveButton = document.createElement("button");
+  saveButton.textContent = "Salvar";
+  saveButton.onclick = (e) => {
+    e.stopPropagation();
+    finishEditing(messageId, textContentSpan.textContent);
+  };
+  const cancelButton = document.createElement("button");
+  cancelButton.textContent = "Cancelar";
+  cancelButton.onclick = (e) => {
+    e.stopPropagation();
+    cancelEditing(messageId, originalUnformattedContent);
+  }; // Passar o texto original
+
+  editActionsDiv.appendChild(saveButton);
+  editActionsDiv.appendChild(cancelButton);
+  // Adicionar após o .message-main-content ou no final do .message-item
+  const mainContent = messageElement.querySelector(".message-main-content");
+  if (mainContent && mainContent.parentNode === messageElement) {
+    mainContent.insertAdjacentElement("afterend", editActionsDiv);
+  } else {
+    messageElement.appendChild(editActionsDiv);
+  }
+
+  const range = document.createRange();
+  const sel = window.getSelection();
+  range.selectNodeContents(textContentSpan);
+  range.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function finishEditing(messageId, newContent) {
+  const messageElement = messageElementsCache.get(messageId);
+  if (!messageElement) return;
+
+  const trimmedContent = newContent.trim();
+  if (trimmedContent.length === 0 || trimmedContent.length > 500) {
+    displayInlineError(
+      "Edição inválida (1-500 caracteres). Tente novamente.",
+      messageErrorDisplayDiv
+    );
+    const textContentSpan = messageElement.querySelector(
+      ".message-text-content .content"
+    );
+    if (textContentSpan) textContentSpan.focus(); // Devolve o foco para o usuário corrigir
+    return;
+  }
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(
+      JSON.stringify({
+        type: MSG_TYPES.EDIT_MESSAGE,
+        messageId: messageId,
+        newContent: trimmedContent,
+      })
+    );
+  }
+  // A UI será atualizada quando o servidor enviar MESSAGE_EDITED.
+  // Apenas removemos o estado de edição localmente para permitir novas interações.
+  cleanUpEditingUI(messageId);
+}
+
+function cancelEditing(messageId, originalUnformattedContent) {
+  const messageElement = messageElementsCache.get(messageId);
+  if (!messageElement) return;
+
+  const textContentSpan = messageElement.querySelector(
+    ".message-text-content .content"
+  );
+  if (textContentSpan) {
+    textContentSpan.setAttribute("contenteditable", "false");
+    // Restaurar com o conteúdo original *formatado* (será re-renderizado pelo updateDisplayedMessage se necessário)
+    // Por ora, vamos reverter para o conteúdo não formatado, pois a formatação é complexa.
+    // O ideal seria que o servidor reenviasse a mensagem completa em caso de cancelamento,
+    // ou o cliente guardasse o HTML original.
+    textContentSpan.innerHTML = formatMessageContent(
+      originalUnformattedContent
+    ); // Re-formata o original
+  }
+  cleanUpEditingUI(messageId);
+}
+
+function cleanUpEditingUI(messageId) {
+  const messageElement = messageElementsCache.get(messageId);
+  if (!messageElement) return;
+
+  messageElement.classList.remove("editing");
+  const textContentSpan = messageElement.querySelector(
+    ".message-text-content .content"
+  );
+  if (textContentSpan) {
+    textContentSpan.setAttribute("contenteditable", "false");
+  }
+  const editActionsDiv = messageElement.querySelector(".edit-actions");
+  if (editActionsDiv) editActionsDiv.remove();
+  const actionsDiv = messageElement.querySelector(".message-actions");
+  if (actionsDiv) actionsDiv.style.display = "";
+}
+
+function deleteMessage(messageId) {
+  if (!confirm("Tem certeza que deseja excluir esta mensagem?")) return;
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(
+      JSON.stringify({
+        type: MSG_TYPES.DELETE_MESSAGE,
+        messageId: messageId,
+      })
+    );
+  }
+  // A UI será atualizada quando o servidor enviar MESSAGE_DELETED.
 }
 
 // --- Event Listeners ---
@@ -769,8 +1114,11 @@ logoutButton.addEventListener("click", handleLogout);
 
 sendButton.addEventListener("click", sendMessage);
 msgInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") sendMessage();
-});
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    sendMessage();
+  }
+}); // Prevenir nova linha com Enter
 msgInput.addEventListener("input", handleUserInputChange);
 
 darkModeToggleButton.addEventListener("click", toggleDarkMode);
@@ -779,7 +1127,6 @@ toggleUpdatesButton.addEventListener("click", () => {
 });
 
 newMessagesIndicator.addEventListener("click", scrollToBottom);
-
 chatDiv.addEventListener("scroll", () => {
   if (chatDiv.scrollHeight - chatDiv.clientHeight <= chatDiv.scrollTop + 10) {
     newMessagesIndicator.classList.add("hidden");
@@ -797,6 +1144,44 @@ window.addEventListener("blur", () => {
   isTabActive = false;
 });
 
+if (emojiToggleButton && emojiPickerContainer && emojiPicker) {
+  emojiToggleButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    emojiPickerContainer.classList.toggle("hidden");
+    if (!emojiPickerContainer.classList.contains("hidden")) {
+      setTimeout(() => {
+        const searchInput = emojiPicker.shadowRoot?.querySelector(
+          'input[type="search"]'
+        );
+        if (searchInput) searchInput.focus();
+      }, 0);
+    }
+  });
+  emojiPicker.addEventListener("emoji-click", (event) => {
+    msgInput.value += event.detail.unicode;
+    msgInput.focus();
+  });
+  document.addEventListener("click", (event) => {
+    if (
+      emojiPickerContainer &&
+      !emojiPickerContainer.classList.contains("hidden") &&
+      !emojiPickerContainer.contains(event.target) &&
+      event.target !== emojiToggleButton
+    ) {
+      emojiPickerContainer.classList.add("hidden");
+    }
+  });
+  emojiPickerContainer.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+} else {
+  console.warn("Elementos do Emoji Picker não encontrados.");
+}
+
+if (cancelReplyButton) {
+  cancelReplyButton.addEventListener("click", cancelReplying);
+}
+
 window.onload = () => {
   if (localStorage.getItem("theme") === "dark") {
     pageBody.classList.add("dark-mode");
@@ -808,6 +1193,9 @@ window.onload = () => {
   chatUiDiv.classList.add("hidden");
   joinScreenDiv.classList.remove("hidden");
   logoutButton.classList.add("hidden");
+
+  if (emojiPickerContainer) emojiPickerContainer.classList.add("hidden");
+  if (replyingToContainer) replyingToContainer.classList.add("hidden");
 
   usernameInput.focus();
   updateAvatarPreview();

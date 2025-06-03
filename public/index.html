@@ -68,7 +68,9 @@
         <!-- Inicialmente escondido -->
         <div class="chat-wrapper">
           <div id="chatContainer">
-            <div id="chat" aria-live="polite"></div>
+            <div id="chat" aria-live="polite">
+              <!-- Mensagens serão inseridas aqui -->
+            </div>
             <button id="newMessagesIndicator" class="hidden">
               ⬇️ Novas Mensagens
             </button>
@@ -80,7 +82,22 @@
         </div>
         <div id="typingIndicator" class="typing-indicator"></div>
 
+        <!-- Área de Resposta -->
+        <div id="replyingToContainer" class="replying-to-container hidden">
+          <div class="replying-to-header">
+            <span>Respondendo a:</span>
+            <button id="cancelReplyButton" title="Cancelar Resposta">×</button>
+          </div>
+          <div id="replyingToPreview" class="replying-to-preview">
+            <!-- Conteúdo da mensagem original aqui -->
+          </div>
+        </div>
+
         <div class="input-wrapper" id="messageInputWrapper">
+          <div id="emojiPickerContainer" class="hidden">
+            <emoji-picker></emoji-picker>
+          </div>
+          <button id="emojiToggleButton" title="Inserir Emoji">😀</button>
           <input
             id="msg"
             type="text"
@@ -147,6 +164,10 @@
         <li>⏳ Feedback de "Conectando..." ao entrar</li>
         <li>📜 Esta aba de atualizações foi adicionada!</li>
         <li>📜 Histórico das últimas mensagens ao entrar no chat!</li>
+        <li>✨ Seletor de Emojis! 😀</li>
+        <li>📝 Edição de mensagens (com limite de tempo).</li>
+        <li>🗑️ Exclusão de mensagens (próprias).</li>
+        <li>↩️ Responder a mensagens específicas.</li>
         <li>
           📜 Nota: Eu tive bastante dificuldade para fazer isso, mas com toda
           certeza valeu a pena...
@@ -162,6 +183,19 @@
       </ul>
     </div>
 
+    <!-- Template para os botões de ação da mensagem -->
+    <template id="messageActionsTemplate">
+      <div class="message-actions">
+        <button class="action-reply" title="Responder">↩️</button>
+        <button class="action-edit" title="Editar">✏️</button>
+        <button class="action-delete" title="Excluir">🗑️</button>
+      </div>
+    </template>
+
+    <script
+      type="module"
+      src="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1/index.js"
+    ></script>
     <script src="script.js"></script>
   </body>
 </html>

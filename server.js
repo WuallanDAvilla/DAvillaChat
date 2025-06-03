@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
+const crypto = require("crypto"); // Para IDs únicos
 
 const PORT = process.env.PORT || 3000;
 
@@ -39,29 +40,40 @@ const wss = new WebSocket.Server({ server });
 
 const MESSAGE_LIMIT = 5;
 const MESSAGE_LIMIT_WINDOW = 10000; // 10 segundos
-const MAX_HISTORY_LENGTH = 10;
+const MAX_HISTORY_LENGTH = 20; // Aumentado um pouco
+const EDIT_WINDOW = 5 * 60 * 1000; // 5 minutos para editar
 
 // Estrutura do clientData: { name: string, avatarStyle: string, avatarSeed: string, isTyping: boolean, messageTimestamps: number[] }
 const clients = new Map();
+// messageHistory agora armazena objetos de mensagem completos, incluindo IDs, isEdited, isDeleted, replyTo etc.
 const messageHistory = [];
 
 const MSG_TYPES_SERVER = {
   JOIN: "join",
-  USER_MESSAGE: "user_message",
+  USER_MESSAGE: "user_message", // Servidor envia este tipo com dados completos
   SYSTEM_MESSAGE: "system_message",
-  PRIVATE_MESSAGE: "private_message",
-  PRIVATE_MESSAGE_RECEIVED: "private_message_received",
-  PRIVATE_MESSAGE_SENT: "private_message_sent",
+  PRIVATE_MESSAGE: "private_message", // Cliente envia tipo para mandar PM
+  PRIVATE_MESSAGE_RECEIVED: "private_message_received", // Servidor envia para o destinatário
+  PRIVATE_MESSAGE_SENT: "private_message_sent", // Servidor envia para o remetente (confirmação)
   USER_TYPING: "user_typing",
   TYPING_START: "typing_start",
   TYPING_STOP: "typing_stop",
   USER_LIST: "userlist",
   ERROR: "error",
-  MESSAGE: "message",
+  MESSAGE: "message", // Cliente envia este tipo para mensagem pública (pode ter replyTo)
   CLEAR_CHAT_COMMAND: "clear_chat_command",
   CLEAR_CHAT_SELF: "clear_chat_self",
   HISTORY_MESSAGES: "history_messages",
+
+  EDIT_MESSAGE: "edit_message", // Cliente -> Servidor (messageId, newContent)
+  MESSAGE_EDITED: "message_edited", // Servidor -> Clientes (message object atualizado)
+  DELETE_MESSAGE: "delete_message", // Cliente -> Servidor (messageId)
+  MESSAGE_DELETED: "message_deleted", // Servidor -> Clientes (message object atualizado)
 };
+
+function generateId() {
+  return crypto.randomUUID();
+}
 
 function findClientByName(name) {
   for (const [ws, clientData] of clients.entries()) {
@@ -89,6 +101,15 @@ function broadcast(data, SENDER_WS = null) {
 }
 
 function addToHistory(messageData) {
+  // Garante que todas as mensagens no histórico tenham ID, tipo, timestamp
+  if (!messageData.id) messageData.id = generateId();
+  if (!messageData.type) {
+    console.warn("Mensagem adicionada ao histórico sem tipo:", messageData);
+    // Definir um tipo padrão ou tratar erro
+    return;
+  }
+  if (!messageData.timestamp) messageData.timestamp = new Date().toISOString();
+
   if (messageHistory.length >= MAX_HISTORY_LENGTH) {
     messageHistory.shift();
   }
@@ -168,6 +189,7 @@ wss.on("connection", (ws) => {
       }
 
       const joinMessageData = {
+        id: generateId(),
         type: MSG_TYPES_SERVER.SYSTEM_MESSAGE,
         text: `🔵 ${name} entrou.`,
         timestamp: new Date().toISOString(),
@@ -178,7 +200,8 @@ wss.on("connection", (ws) => {
     } else if (clientData) {
       if (
         data.type === MSG_TYPES_SERVER.MESSAGE ||
-        data.type === MSG_TYPES_SERVER.PRIVATE_MESSAGE
+        data.type === MSG_TYPES_SERVER.PRIVATE_MESSAGE ||
+        data.type === MSG_TYPES_SERVER.EDIT_MESSAGE // Rate limit também para edições
       ) {
         const now = Date.now();
         clientData.messageTimestamps = clientData.messageTimestamps.filter(
@@ -203,17 +226,19 @@ wss.on("connection", (ws) => {
           const msgText = String(data.text || "").trim();
           if (msgText.length > 0 && msgText.length <= 500) {
             const messageData = {
+              id: generateId(),
               type: MSG_TYPES_SERVER.USER_MESSAGE,
               sender: clientData.name,
               avatarStyle: clientData.avatarStyle,
               avatarSeed: clientData.avatarSeed,
               content: msgText,
               timestamp: new Date().toISOString(),
+              isEdited: false,
+              isDeleted: false,
+              replyTo: data.replyTo || null, // replyTo: { messageId, sender, contentPreview }
             };
-            broadcast(messageData);
-            if (messageData.type === MSG_TYPES_SERVER.USER_MESSAGE) {
-              addToHistory(messageData);
-            }
+            broadcast(messageData); // Broadcast como USER_MESSAGE
+            addToHistory(messageData);
           } else if (msgText.length > 500) {
             ws.send(
               JSON.stringify({
@@ -293,6 +318,8 @@ wss.on("connection", (ws) => {
                   avatarSeed: clientData.avatarSeed,
                   content: privateContent,
                   timestamp: new Date().toISOString(),
+                  // PMs não terão ID nesta versão simplificada para edição/exclusão,
+                  // mas poderiam se desejado.
                 })
               );
             }
@@ -319,6 +346,140 @@ wss.on("connection", (ws) => {
             );
           }
           break;
+
+        case MSG_TYPES_SERVER.EDIT_MESSAGE:
+          const { messageId: editId, newContent } = data;
+          const msgToEditIndex = messageHistory.findIndex(
+            (m) => m.id === editId
+          );
+
+          if (msgToEditIndex === -1) {
+            ws.send(
+              JSON.stringify({
+                type: MSG_TYPES_SERVER.ERROR,
+                text: "Mensagem não encontrada para editar.",
+              })
+            );
+            return;
+          }
+          const msgToEdit = messageHistory[msgToEditIndex];
+
+          if (msgToEdit.sender !== clientData.name) {
+            ws.send(
+              JSON.stringify({
+                type: MSG_TYPES_SERVER.ERROR,
+                text: "Você não pode editar esta mensagem.",
+              })
+            );
+            return;
+          }
+          if (msgToEdit.isDeleted) {
+            ws.send(
+              JSON.stringify({
+                type: MSG_TYPES_SERVER.ERROR,
+                text: "Não é possível editar uma mensagem excluída.",
+              })
+            );
+            return;
+          }
+          const timeSinceSent =
+            Date.now() - new Date(msgToEdit.timestamp).getTime();
+          if (
+            timeSinceSent > EDIT_WINDOW &&
+            msgToEdit.type !== MSG_TYPES_SERVER.SYSTEM_MESSAGE
+          ) {
+            // System messages have no edit window
+            ws.send(
+              JSON.stringify({
+                type: MSG_TYPES_SERVER.ERROR,
+                text: `Tempo limite para edição (${
+                  EDIT_WINDOW / 60000
+                } min) excedido.`,
+              })
+            );
+            return;
+          }
+          const trimmedNewContent = String(newContent || "").trim();
+          if (
+            trimmedNewContent.length === 0 ||
+            trimmedNewContent.length > 500
+          ) {
+            ws.send(
+              JSON.stringify({
+                type: MSG_TYPES_SERVER.ERROR,
+                text: "Conteúdo da edição inválido (1-500 caracteres).",
+              })
+            );
+            return;
+          }
+
+          // Atualiza a mensagem no histórico
+          messageHistory[msgToEditIndex] = {
+            ...msgToEdit,
+            content: trimmedNewContent,
+            isEdited: true,
+            editedTimestamp: new Date().toISOString(),
+          };
+
+          broadcast({
+            type: MSG_TYPES_SERVER.MESSAGE_EDITED,
+            message: messageHistory[msgToEditIndex],
+          });
+          break;
+
+        case MSG_TYPES_SERVER.DELETE_MESSAGE:
+          const { messageId: deleteId } = data;
+          const msgToDeleteIndex = messageHistory.findIndex(
+            (m) => m.id === deleteId
+          );
+
+          if (msgToDeleteIndex === -1) {
+            ws.send(
+              JSON.stringify({
+                type: MSG_TYPES_SERVER.ERROR,
+                text: "Mensagem não encontrada para excluir.",
+              })
+            );
+            return;
+          }
+          const msgToDelete = messageHistory[msgToDeleteIndex];
+
+          if (msgToDelete.sender !== clientData.name) {
+            ws.send(
+              JSON.stringify({
+                type: MSG_TYPES_SERVER.ERROR,
+                text: "Você não pode excluir esta mensagem.",
+              })
+            );
+            return;
+          }
+          if (msgToDelete.isDeleted) {
+            return; // Já excluída
+          }
+          if (msgToDelete.type === MSG_TYPES_SERVER.SYSTEM_MESSAGE) {
+            ws.send(
+              JSON.stringify({
+                type: MSG_TYPES_SERVER.ERROR,
+                text: "Você não pode excluir mensagens do sistema.",
+              })
+            );
+            return;
+          }
+
+          messageHistory[msgToDeleteIndex] = {
+            ...msgToDelete,
+            content: "[Mensagem excluída pelo autor]",
+            isDeleted: true,
+            isEdited: false, // Resetar status de edição
+            // replyTo e outros campos são mantidos para consistência
+          };
+
+          broadcast({
+            type: MSG_TYPES_SERVER.MESSAGE_DELETED,
+            message: messageHistory[msgToDeleteIndex],
+          });
+          break;
+
         case MSG_TYPES_SERVER.CLEAR_CHAT_COMMAND:
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: MSG_TYPES_SERVER.CLEAR_CHAT_SELF }));
@@ -359,7 +520,6 @@ wss.on("connection", (ws) => {
         );
       }
       const reasonStr = reason ? reason.toString() : "";
-      // Não anuncia saída se for por nome inválido/em uso, não autenticado ou se o cliente pediu para sair (código 1000 normal)
       const programmaticLeave =
         code === 1000 && reasonStr === "Client requested logout";
       if (
@@ -370,6 +530,7 @@ wss.on("connection", (ws) => {
             !reasonStr.includes("Não autenticado")))
       ) {
         const leaveMessageData = {
+          id: generateId(),
           type: MSG_TYPES_SERVER.SYSTEM_MESSAGE,
           text: `🔴 ${clientData.name} saiu.`,
           timestamp: new Date().toISOString(),
