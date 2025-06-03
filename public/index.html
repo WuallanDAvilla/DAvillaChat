@@ -4,35 +4,42 @@
 <head>
   <meta charset="UTF-8" />
   <title>D'Avilla Chat</title>
-  <link rel="icon" href="../assets/IconeDoMeuSite.png" type="image/png" />
+  <link rel="icon" href="assets/IconeDoMeuSite.png" type="image/png" />
+  <link rel="stylesheet" href="styles/style.css">
 </head>
 
 <body id="pageBody">
   <div class="container">
     <h1>💬 D'Avilla Chat</h1>
-    <button onclick="toggleDarkMode()">🌙 Modo Escuro</button>
+    <button id="darkModeToggle">🌙 Modo Escuro</button>
 
-    <div class="input-wrapper">
-      <input id="username" placeholder="Digite seu nome" />
-      <button onclick="setName()">Entrar</button>
+    <div class="input-wrapper" id="nameInputWrapper">
+      <input id="username" placeholder="Digite seu nome" maxlength="25" />
+      <button id="joinButton">Entrar</button>
     </div>
 
     <div class="chat-wrapper">
-      <div id="chat" style="display: none;"></div>
-
-      <div id="users" style="width: 200px; display: none;">
-        <h3 style="background-color: rgb(49, 0, 245); color: white; margin-top: 0;">Online</h3>
-        <ul id="userList" style="list-style: none; padding: 0;"></ul>
+      <div id="chat" class="hidden"></div>
+      <div id="users" class="hidden">
+        <h3>Online</h3>
+        <ul id="userList"></ul>
       </div>
     </div>
+    <div id="typingIndicator" class="typing-indicator"></div>
 
-    <div class="input-wrapper">
-      <input id="msg" type="text" placeholder="Digite sua mensagem..." disabled />
+    <div class="input-wrapper" id="messageInputWrapper">
+      <input id="msg" type="text" placeholder="Digite sua mensagem..." disabled maxlength="500" />
       <button id="send" disabled>Enviar</button>
     </div>
   </div>
 
-  <button id="toggleUpdates">📜 Atualizações</button>
+  <button id="toggleUpdates" title="Ver Atualizações">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+      <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+    </svg>
+  </button>
 
   <div id="updatesPanel">
     <h2>🛠️ Atualizações do Chat</h2>
@@ -40,6 +47,18 @@
       <li>✅ Interface redesenhada e centralizada</li>
       <li>🌙 Suporte a modo escuro</li>
       <li>👥 Painel de usuários online com cores</li>
+      <li>🎨 Avatares dinâmicos para usuários</li>
+      <li>🛡️ Melhorias de segurança (XSS)</li>
+      <li>⚙️ Validações de entrada (nome, mensagem)</li>
+      <li>🕒 Timestamps nas mensagens</li>
+      <li>🔗 Caminhos de arquivos corrigidos</li>
+      <li>💅 Estilos centralizados em CSS</li>
+      <li>💬 Indicador de "Digitando..."</li>
+      <li>📜 Scroll Inteligente no Chat</li>
+      <li>✨ Animações Sutis</li>
+      <li>🖌️ Barra de Rolagem Estilizada</li>
+      <li>📱 Melhorias na Responsividade</li>
+      <li>🤫 Mensagens Privadas (Sussurros)</li> {/* ADICIONADO */}
       <li>📜 Esta aba de atualizações foi adicionada!</li>
       <li>📜 Nota: Eu tive bastante dificuldade para fazer isso, mas com toda certeza valeu a pena...</li>
       <li>👥 Meu GitHub = <a href="https://github.com/WuallanDAvilla" target="_blank">WuallanDAvilla</a></li>
@@ -49,222 +68,6 @@
   </div>
 
   <script src="script.js"></script>
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      font-family: 'Segoe UI', sans-serif;
-      margin: 0;
-      padding: 0;
-      background: linear-gradient(135deg, #74ebd5, #ACB6E5);
-      min-height: 100vh;
-      display: flex;
-      justify-content: center;
-      align-items: start;
-    }
-
-    .container {
-      margin-top: 40px;
-      width: 95%;
-      max-width: 900px;
-      padding: 20px;
-      background-color: rgba(118, 167, 207, 0.85);
-      border-radius: 20px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-      text-align: center;
-    }
-
-    h1 {
-      margin-bottom: 10px;
-    }
-
-    button,
-    input {
-      padding: 10px 15px;
-      border: none;
-      border-radius: 8px;
-      font-size: 1rem;
-      transition: 0.3s ease;
-    }
-
-    input {
-      margin-right: 8px;
-      width: 200px;
-    }
-
-    button:hover {
-      transform: scale(1.05);
-      cursor: pointer;
-    }
-
-    .dark-mode {
-      background: linear-gradient(135deg, #121212, #2b2b2b);
-      color: #f1f1f1;
-    }
-
-    .dark-mode input,
-    .dark-mode button {
-      background-color: #333;
-      color: #f1f1f1;
-      border: 1px solid #555;
-    }
-
-    #chat,
-    #users {
-      background-color: #fff;
-      border: 1px solid #ccc;
-      padding: 10px;
-      margin-top: 20px;
-      border-radius: 12px;
-    }
-
-    .dark-mode #chat,
-    .dark-mode #users {
-      background-color: #1e1e1e;
-      border-color: #555;
-    }
-
-    #chat {
-      height: 300px;
-      overflow-y: auto;
-      flex: 2;
-    }
-
-    #users {
-      flex: 1;
-      background: #eee;
-    }
-
-    #userList li {
-      text-align: left;
-      margin: 5px 0;
-    }
-
-    #chat div {
-      text-align: left;
-      margin-bottom: 5px;
-      background: rgba(0, 0, 0, 0.05);
-      border-radius: 10px;
-      padding: 5px;
-    }
-
-    .dark-mode #chat div {
-      background: rgba(32, 8, 8, 0.05);
-    }
-
-    #updatesPanel {
-      position: fixed;
-      top: 0;
-      right: -320px;
-      width: 300px;
-      height: 100%;
-      background-color: #ffffff;
-      border-left: 2px solid #ccc;
-      box-shadow: -2px 0 8px rgba(0, 0, 0, 0.2);
-      padding: 20px;
-      overflow-y: auto;
-      transition: right 0.4s ease-in-out;
-      z-index: 999;
-      border-radius: 8px 0 0 8px;
-    }
-
-    .dark-mode #updatesPanel {
-      background-color: #1e1e1e;
-      color: #f1f1f1;
-      border-left-color: #555;
-    }
-
-    #updatesPanel.open {
-      right: 0;
-    }
-
-    #updatesPanel h2 {
-      margin-top: 0;
-      font-size: 1.2rem;
-      text-align: center;
-    }
-
-    #updatesPanel ul {
-      list-style: none;
-      padding-left: 0;
-    }
-
-    #updatesPanel li {
-      margin-bottom: 10px;
-      border-left: 4px solide #0099ff;
-      padding-left: 10px;
-    }
-
-    #toggleUpdates {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      z-index: 1000;
-      background-color: #0099ff;
-      color: white;
-      border-radius: 50px;
-      padding: 12px 18px;
-      font-weight: bold;
-    }
-
-    .dark-mode #toggleUpdates {
-      background-color: #007acc;
-    }
-
-    .chat-wrapper {
-      display: flex;
-      flex-direction: row;
-      gap: 20px;
-      margin-top: 20px;
-      justify-content: center;
-    }
-
-    .input-wrapper {
-      margin-top: 15px;
-    }
-
-    .dark-mode #userList li {
-      color: inherit;
-    }
-
-    /* Additional styles for missing elements */
-    #pageBody {
-      background-color: #f9f9f9;
-    }
-
-    #username {
-      width: 100%;
-      max-width: 300px;
-      padding: 10px;
-      border: 1px solid #ccc;
-      border-radius: 8px;
-    }
-
-    #msg {
-      width: 100%;
-      max-width: 500px;
-      padding: 10px;
-      border: 1px solid #ccc;
-      border-radius: 8px;
-    }
-
-    #send {
-      background-color: #0099ff;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      padding: 10px 15px;
-      cursor: pointer;
-      transition: 0.3s ease;
-    }
-
-    #send:hover {
-      background-color: #007acc;
-      transform: scale(1.05);
-    }
-  </style>
 </body>
 
 </html>

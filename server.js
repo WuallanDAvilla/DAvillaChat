@@ -1,73 +1,241 @@
-const http = require('http'); // Importa o módulo HTTP para criar o servidor.
-const fs = require('fs'); // Importa o módulo File System para manipular arquivos.
-const path = require('path'); // Importa o módulo Path para manipular caminhos de arquivos.
-const WebSocket = require('ws'); // Importa o módulo WebSocket para comunicação em tempo real.
+// server.js
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const WebSocket = require("ws");
 
-const server = http.createServer((req, res) => { // Cria um servidor HTTP.
-  let filePath = './public' + (req.url === '/' ? '/index.html' : req.url); // Define o caminho do arquivo solicitado.
-  const extname = String(path.extname(filePath)).toLowerCase(); // Obtém a extensão do arquivo solicitado.
-  const mimeTypes = { // Define os tipos MIME suportados.
-    '.html': 'text/html',
-    '.js': 'text/javascript',
+// ... (código do http.createServer e mimeTypes continua o mesmo) ...
+const server = http.createServer((req, res) => {
+  let filePath = "./public" + (req.url === "/" ? "/index.html" : req.url);
+  const extname = String(path.extname(filePath)).toLowerCase();
+  const mimeTypes = {
+    ".html": "text/html",
+    ".js": "text/javascript",
+    ".css": "text/css",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
   };
+  const contentType = mimeTypes[extname] || "application/octet-stream";
 
-  const contentType = mimeTypes[extname] || 'application/octet-stream'; // Define o tipo de conteúdo com base na extensão.
-
-  fs.readFile(filePath, (error, content) => { // Lê o arquivo solicitado.
-    if (error) { // Se ocorrer um erro ao ler o arquivo...
-      res.writeHead(404); // Retorna o código de status 404.
-      res.end('Arquivo não encontrado'); // Envia uma mensagem de erro.
-    } else { // Se o arquivo for encontrado...
-      res.writeHead(200, { 'Content-Type': contentType }); // Retorna o código de status 200 e o tipo de conteúdo.
-      res.end(content, 'utf-8'); // Envia o conteúdo do arquivo.
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      if (error.code === "ENOENT") {
+        res.writeHead(404);
+        res.end("Arquivo não encontrado");
+      } else {
+        res.writeHead(500);
+        res.end("Erro interno do servidor: " + error.code);
+      }
+    } else {
+      res.writeHead(200, { "Content-Type": contentType });
+      res.end(content, "utf-8");
     }
   });
 });
 
-const wss = new WebSocket.Server({ server }); // Cria um servidor WebSocket associado ao servidor HTTP.
-const clients = new Map(); // ws => nome // Mapeia os clientes conectados ao WebSocket e seus nomes.
+const wss = new WebSocket.Server({ server });
+const clients = new Map(); // ws => { name: string, isTyping: boolean }
 
-function broadcast(data) { // Função para enviar mensagens a todos os clientes conectados.
-  wss.clients.forEach((client) => { // Itera sobre todos os clientes conectados.
-    if (client.readyState === WebSocket.OPEN) { // Verifica se o cliente está com a conexão aberta.
-      client.send(JSON.stringify(data)); // Envia os dados em formato JSON.
+// Função para encontrar um cliente (ws) pelo nome
+function findClientByName(name) {
+  for (const [ws, clientData] of clients.entries()) {
+    if (clientData.name === name) {
+      return ws;
+    }
+  }
+  return null;
+}
+
+function broadcast(data, SENDER_WS = null) {
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      if (SENDER_WS && client === SENDER_WS && data.type === "user_typing")
+        return;
+      try {
+        client.send(JSON.stringify(data));
+      } catch (e) {
+        console.error("Erro ao enviar mensagem para o cliente:", e);
+      }
     }
   });
 }
 
-function updateUserList() { // Função para atualizar a lista de usuários conectados.
-  const userList = Array.from(clients.values()); // Obtém os nomes de todos os usuários conectados.
-  broadcast({ type: 'userlist', users: userList }); // Envia a lista de usuários para todos os clientes.
+function updateUserList() {
+  const userList = Array.from(clients.values()).map(
+    (clientData) => clientData.name
+  );
+  broadcast({ type: "userlist", users: userList });
 }
 
-wss.on('connection', (ws) => { // Evento disparado quando um cliente se conecta ao WebSocket.
-  ws.on('message', (msg) => { // Evento disparado quando o servidor recebe uma mensagem de um cliente.
-    const data = JSON.parse(msg); // Converte a mensagem recebida de JSON para objeto.
-
-    if (data.type === 'join') { // Se o tipo da mensagem for "join" (entrada no chat)...
-      clients.set(ws, data.name); // Adiciona o cliente e seu nome ao mapa de clientes.
-      broadcast({ type: 'message', text: `🔵 ${data.name} entrou no chat.` }); // Notifica todos os clientes que o usuário entrou.
-      updateUserList(); // Atualiza a lista de usuários conectados.
+wss.on("connection", (ws) => {
+  ws.on("message", (msg) => {
+    let data;
+    try {
+      data = JSON.parse(msg);
+    } catch (e) {
+      console.error("Mensagem inválida recebida:", msg);
+      ws.send(
+        JSON.stringify({ type: "error", text: "Formato de mensagem inválido." })
+      );
+      return;
     }
 
-    if (data.type === 'message') { // Se o tipo da mensagem for "message" (mensagem de chat)...
-      const name = clients.get(ws); // Obtém o nome do cliente que enviou a mensagem.
-      broadcast({ type: 'message', text: `${name}: ${data.text}` }); // Envia a mensagem para todos os clientes.
+    const clientData = clients.get(ws);
+
+    if (data.type === "join") {
+      let name = String(data.name || "").trim();
+      name = name.replace(/[<>]/g, "");
+      if (name.length === 0 || name.length > 25) {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            text: "Nome inválido (vazio ou muito longo - máx 25 caracteres).",
+          })
+        );
+        ws.close();
+        return;
+      }
+      if (Array.from(clients.values()).some((c) => c.name === name)) {
+        ws.send(
+          JSON.stringify({ type: "error", text: "Este nome já está em uso." })
+        );
+        ws.close();
+        return;
+      }
+      clients.set(ws, { name: name, isTyping: false });
+      broadcast({
+        type: "system_message",
+        text: `🔵 ${name} entrou no chat.`,
+        timestamp: new Date().toISOString(),
+      });
+      updateUserList();
+    } else if (clientData) {
+      if (data.type === "message") {
+        const messageText = String(data.text || "").trim();
+        if (messageText.length > 0 && messageText.length <= 500) {
+          broadcast({
+            type: "user_message",
+            sender: clientData.name,
+            content: messageText,
+            timestamp: new Date().toISOString(),
+          });
+        } else if (messageText.length > 500) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              text: "Sua mensagem é muito longa (máx 500 caracteres).",
+            })
+          );
+        }
+      } else if (data.type === "typing_start") {
+        if (!clientData.isTyping) {
+          clientData.isTyping = true;
+          broadcast(
+            { type: "user_typing", name: clientData.name, isTyping: true },
+            ws
+          );
+        }
+      } else if (data.type === "typing_stop") {
+        if (clientData.isTyping) {
+          clientData.isTyping = false;
+          broadcast(
+            { type: "user_typing", name: clientData.name, isTyping: false },
+            ws
+          );
+        }
+      } else if (data.type === "private_message") {
+        // NOVA LÓGICA
+        const recipientName = String(data.recipient || "").trim();
+        const privateContent = String(data.content || "").trim();
+
+        if (!recipientName || !privateContent) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              text: "Destinatário ou conteúdo da mensagem privada ausente.",
+            })
+          );
+          return;
+        }
+        if (privateContent.length > 500) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              text: "Sua mensagem privada é muito longa (máx 500 caracteres).",
+            })
+          );
+          return;
+        }
+
+        const recipientWs = findClientByName(recipientName);
+
+        if (recipientWs) {
+          // Envia para o destinatário
+          if (recipientWs.readyState === WebSocket.OPEN) {
+            recipientWs.send(
+              JSON.stringify({
+                type: "private_message_received",
+                sender: clientData.name,
+                content: privateContent,
+                timestamp: new Date().toISOString(),
+              })
+            );
+          }
+          // Envia confirmação/cópia para o remetente
+          ws.send(
+            JSON.stringify({
+              type: "private_message_sent",
+              recipient: recipientName,
+              content: privateContent,
+              timestamp: new Date().toISOString(),
+            })
+          );
+        } else {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              text: `Usuário "${recipientName}" não encontrado ou offline.`,
+            })
+          );
+        }
+      }
+    } else if (data.type !== "join") {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          text: "Você precisa entrar no chat primeiro.",
+        })
+      );
     }
   });
 
-  ws.on('close', () => { // Evento disparado quando um cliente desconecta.
-    const name = clients.get(ws); // Obtém o nome do cliente que desconectou.
-    clients.delete(ws); // Remove o cliente do mapa de clientes.
-    if (name) { // Se o cliente tinha um nome associado...
-      broadcast({ type: 'message', text: `🔴 ${name} saiu do chat.` }); // Notifica todos os clientes que o usuário saiu.
-      updateUserList(); // Atualiza a lista de usuários conectados.
+  ws.on("close", () => {
+    const clientData = clients.get(ws);
+    if (clientData) {
+      clients.delete(ws);
+      if (clientData.isTyping) {
+        broadcast(
+          { type: "user_typing", name: clientData.name, isTyping: false },
+          ws
+        );
+      }
+      broadcast({
+        type: "system_message",
+        text: `🔴 ${clientData.name} saiu no chat.`,
+        timestamp: new Date().toISOString(),
+      });
+      updateUserList();
     }
+  });
+
+  ws.on("error", (error) => {
+    console.error("Erro no WebSocket do cliente:", error);
   });
 });
 
-server.listen(3000, '0.0.0.0', () => { // Inicia o servidor HTTP na porta 3000.
-  console.log('Servidor rodando em http://localhost:3000'); // Exibe uma mensagem no console indicando que o servidor está rodando.
+server.listen(3000, "0.0.0.0", () => {
+  console.log("Servidor rodando em http://localhost:3000");
 });
-
-
